@@ -3,6 +3,5 @@
     public interface ILoader
     {
         public Task<bool> LoadAsync();
-        public Test();
     }   
 }
