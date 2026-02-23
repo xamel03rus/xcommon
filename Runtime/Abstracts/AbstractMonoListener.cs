@@ -1,4 +1,4 @@
-﻿namespace XCommon.Abstracts
+﻿namespace Xamel.Common.Abstracts
 {
     public class AbstractMonoListener : MonoBehaviour, IDisposable
     {

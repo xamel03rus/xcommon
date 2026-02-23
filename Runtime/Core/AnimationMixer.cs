@@ -6,7 +6,7 @@ using UnityEngine;
 using UnityEngine.Animations;
 using XCommon.Abstracts;
 
-namespace XCommon.Core
+namespace Xamel.Common.Core
 {
     public class AnimationMixer : AbstractAnimationMixer
     {

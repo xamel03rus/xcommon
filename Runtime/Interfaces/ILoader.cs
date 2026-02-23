@@ -1,4 +1,4 @@
-﻿namespace XCommon.Interfaces
+﻿namespace Xamel.Common.Interfaces
 {
     public interface ILoader
     {

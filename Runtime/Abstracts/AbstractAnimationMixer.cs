@@ -6,7 +6,7 @@ using UnityEngine;
 using UnityEngine.Animations;
 using UnityEngine.Playables;
 
-namespace XCommon.Abstracts
+namespace Xamel.Common.Abstracts
 {
     [DisallowMultipleComponent]
     public abstract class AbstractAnimationMixer : MonoBehaviour

@@ -1,4 +1,4 @@
-﻿namespace XCommon.Abstracts
+﻿namespace Xamel.Common.Abstracts
 {
     public abstract class AbstractView : MonoBehaviour, IDisposable
     {

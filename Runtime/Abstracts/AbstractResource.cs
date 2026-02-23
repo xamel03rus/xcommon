@@ -1,7 +1,7 @@
 ﻿using UnityEditor;
 using UnityEngine;
 
-namespace XCommon.Abstracts
+namespace Xamel.Common.Abstracts
 {
     public abstract class AbstractResource : ScriptableObject
     {
