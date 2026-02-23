@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "displayName": "XCommon package",
   "description": "My reusable core systems",
-  "unity": "6000.3.8",
+  "unity": "6000.3",
   "author": {
     "name": "Xamel"
   }
