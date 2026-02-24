@@ -1,6 +1,5 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
-using System.Linq;
 using Unity.Collections;
 using UnityEngine;
 using UnityEngine.Animations;
@@ -9,13 +8,18 @@ using Xamel.Runtime.Models;
 
 namespace Xamel.Common.Core
 {
+    /// <summary>
+    /// Animation mixer for humanoid rigs. Uses <see cref="HumanBodyBones"/> and AvatarMask body parts; bones are collected by tag. Supports overlay and once layers with per-bone weight overrides.
+    /// </summary>
     public class HumanoidAnimationMixer : AbstractAnimationMixer
     {
         private List<Transform> _collectedBones = new();
         private Dictionary<Transform, HumanBodyBones> _humanBoneMapping = new();
-        
-        [SerializeField]
-        private HumanoidTransformWeight[] weightRewrites;
+        private Dictionary<HumanBodyBones, float> _weightByBone;
+        private HashSet<Transform> _maskedTransformsForMain = new();
+        private HashSet<Transform> _maskedTransformsForOnce = new();
+
+        [SerializeField] private HumanoidTransformWeight[] weightRewrites;
 
         private static AvatarMaskBodyPart GetBodyPartForHumanBone(HumanBodyBones bone)
         {
@@ -96,85 +100,66 @@ namespace Xamel.Common.Core
 
         protected override void LoadAvatar()
         {
+            _weightByBone = new Dictionary<HumanBodyBones, float>();
+            if (weightRewrites != null)
+            {
+                foreach (var w in weightRewrites)
+                    _weightByBone[w.bone] = w.weight;
+            }
+
             foreach (HumanBodyBones bone in Enum.GetValues(typeof(HumanBodyBones)))
             {
-                if (bone == HumanBodyBones.LastBone)
-                    continue;
-
-                Transform boneTransform = Animator.GetBoneTransform(bone);
-
-                if (boneTransform == null)
-                    continue;
-
+                if (bone == HumanBodyBones.LastBone) continue;
+                var boneTransform = Animator.GetBoneTransform(bone);
+                if (boneTransform == null) continue;
                 _humanBoneMapping.Add(boneTransform, bone);
             }
 
             CollectBones();
-            
             var numTransforms = _collectedBones.Count;
-            
-            Handles = new NativeArray<TransformStreamHandle>(numTransforms, Allocator.Persistent,
-                NativeArrayOptions.UninitializedMemory);
-            HandleMask = new NativeArray<bool>(numTransforms, Allocator.Persistent,
-                NativeArrayOptions.UninitializedMemory);
-            HandleWeights = new NativeArray<float>(numTransforms, Allocator.Persistent,
-                NativeArrayOptions.UninitializedMemory);
-            OnceHandleMask = new NativeArray<bool>(numTransforms, Allocator.Persistent,
-                NativeArrayOptions.UninitializedMemory);
-            OnceHandleWeights = new NativeArray<float>(numTransforms, Allocator.Persistent,
-                NativeArrayOptions.UninitializedMemory);
-            
+
+            Handles = new NativeArray<TransformStreamHandle>(numTransforms, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+            HandleMask = new NativeArray<bool>(numTransforms, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+            HandleWeights = new NativeArray<float>(numTransforms, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+            OnceHandleMask = new NativeArray<bool>(numTransforms, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+            OnceHandleWeights = new NativeArray<float>(numTransforms, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+
             for (var i = 0; i < numTransforms; i++)
             {
                 Handles[i] = Animator.BindStreamTransform(_collectedBones[i]);
                 HandleMask[i] = false;
                 OnceHandleMask[i] = false;
 
-                if (!_humanBoneMapping.ContainsKey(_collectedBones[i]))
-                {
+                if (!_humanBoneMapping.TryGetValue(_collectedBones[i], out var humanBone))
                     continue;
-                }
 
-                var bodyPart = GetBodyPartForHumanBone(_humanBoneMapping[_collectedBones[i]]);
+                var bodyPart = GetBodyPartForHumanBone(humanBone);
+                var weightVal = GetWeightForBone(humanBone);
 
                 if (ActiveAvatarMask.GetHumanoidBodyPartActive(bodyPart))
                 {
                     HandleMask[i] = true;
-                    
-                    var rewriteWeight = 1f;
-                    var rewrite = weightRewrites?.ToList().Find(w => w.bone.Equals(_humanBoneMapping[_collectedBones[i]]));
-                    if (rewrite != null)
-                    {
-                        rewriteWeight = rewrite.weight;
-                    }
-
-                    HandleWeights[i] = rewriteWeight;
+                    HandleWeights[i] = weightVal;
                 }
 
                 if (ActiveAvatarOnceMask.GetHumanoidBodyPartActive(bodyPart))
                 {
                     OnceHandleMask[i] = true;
-
-                    var rewriteWeight = 1f;
-                    var rewrite = weightRewrites?.ToList().Find(w => w.bone.Equals(_humanBoneMapping[_collectedBones[i]]));
-                    if (rewrite != null)
-                    {
-                        rewriteWeight = rewrite.weight;
-                    }
-                    
-                    OnceHandleWeights[i] = rewriteWeight;   
+                    OnceHandleWeights[i] = weightVal;
                 }
             }
-            
+
+            BuildMaskedSet(HandleMask, _maskedTransformsForMain);
+            BuildMaskedSet(OnceHandleMask, _maskedTransformsForOnce);
+
             for (var i = 0; i < numTransforms; i++)
             {
-                if (!HandleMask[i] && CheckIsChildOf(_collectedBones[i], HandleMask))
+                if (!HandleMask[i] && IsChildOfAny(_collectedBones[i], _maskedTransformsForMain))
                 {
                     HandleMask[i] = true;
                     HandleWeights[i] = 1f;
                 }
-
-                if (!OnceHandleMask[i] && CheckIsChildOf(_collectedBones[i], OnceHandleMask))
+                if (!OnceHandleMask[i] && IsChildOfAny(_collectedBones[i], _maskedTransformsForOnce))
                 {
                     OnceHandleMask[i] = true;
                     OnceHandleWeights[i] = 1f;
@@ -182,86 +167,71 @@ namespace Xamel.Common.Core
             }
         }
 
+        private float GetWeightForBone(HumanBodyBones bone)
+        {
+            return _weightByBone != null && _weightByBone.TryGetValue(bone, out var w) ? w : 1f;
+        }
+
+        private void BuildMaskedSet(NativeArray<bool> mask, HashSet<Transform> set)
+        {
+            set.Clear();
+            for (var i = 0; i < mask.Length; i++)
+            {
+                if (mask[i])
+                    set.Add(_collectedBones[i]);
+            }
+        }
+
+        private static bool IsChildOfAny(Transform t, HashSet<Transform> maskedSet)
+        {
+            for (var p = t; p != null; p = p.parent)
+            {
+                if (maskedSet.Contains(p))
+                    return true;
+            }
+            return false;
+        }
+
         protected override void ReloadAvatar()
         {
             var numTransforms = _collectedBones.Count;
-            
             for (var i = 0; i < numTransforms; i++)
             {
                 HandleMask[i] = false;
-
-                if (!_humanBoneMapping.ContainsKey(_collectedBones[i]))
-                {
+                if (!_humanBoneMapping.TryGetValue(_collectedBones[i], out _))
                     continue;
-                }
-
                 var bodyPart = GetBodyPartForHumanBone(_humanBoneMapping[_collectedBones[i]]);
-
                 if (!ActiveAvatarMask.GetHumanoidBodyPartActive(bodyPart))
-                {
                     continue;
-                }
-
                 HandleMask[i] = true;
             }
-            
+            BuildMaskedSet(HandleMask, _maskedTransformsForMain);
             for (var i = 0; i < numTransforms; i++)
             {
-                if (!HandleMask[i] && CheckIsChildOf(_collectedBones[i], HandleMask))
-                {
+                if (!HandleMask[i] && IsChildOfAny(_collectedBones[i], _maskedTransformsForMain))
                     HandleMask[i] = true;
-                }
             }
         }
-        
+
         protected override void ReloadOnceAvatar()
         {
             var numTransforms = _collectedBones.Count;
-            
             for (var i = 0; i < numTransforms; i++)
             {
                 OnceHandleMask[i] = false;
-
-                if (!_humanBoneMapping.ContainsKey(_collectedBones[i]))
-                {
+                if (!_humanBoneMapping.TryGetValue(_collectedBones[i], out _))
                     continue;
-                }
-
                 var bodyPart = GetBodyPartForHumanBone(_humanBoneMapping[_collectedBones[i]]);
-
                 if (!ActiveAvatarOnceMask.GetHumanoidBodyPartActive(bodyPart))
-                {
                     continue;
-                }
-
                 OnceHandleMask[i] = true;
             }
-            
+            BuildMaskedSet(OnceHandleMask, _maskedTransformsForOnce);
             for (var i = 0; i < numTransforms; i++)
             {
-                if (!OnceHandleMask[i] && CheckIsChildOf(_collectedBones[i], OnceHandleMask))
-                {
+                if (!OnceHandleMask[i] && IsChildOfAny(_collectedBones[i], _maskedTransformsForOnce))
                     OnceHandleMask[i] = true;
-                }
             }
-        }
-
-        private bool CheckIsChildOf(Transform t, NativeArray<bool> mask)
-        {
-            for (var i = 0; i < _collectedBones.Count; i++)
-            {
-                if (t.Equals(_collectedBones[i]))
-                {
-                    continue;
-                }
-                
-                if (mask[i] && t.IsChildOf(_collectedBones[i]))
-                {
-                    return true;
-                }
-            }
-
-            return false;
         }
 
         private void CollectBones()
