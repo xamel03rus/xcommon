@@ -1,4 +1,12 @@
-﻿namespace Xamel.Common.Abstracts
+using System;
+using System.Collections.Generic;
+#if MESSAGEPIPE_AVAILABLE
+using MessagePipe;
+#endif
+using UnityEngine;
+using UnityEngine.UIElements;
+
+namespace Xamel.Common.Abstracts
 {
     public abstract class AbstractView : MonoBehaviour, IDisposable
     {
@@ -16,6 +24,7 @@
             Document.rootVisualElement.style.display = DisplayStyle.None;
         }
 
+#if MESSAGEPIPE_AVAILABLE
         protected void CreateSubscriber<TMessage>(ISubscriber<TMessage> subscriber, Action<TMessage> handler)
         {
             var d = DisposableBag.CreateBuilder();
@@ -24,6 +33,7 @@
 
             _disposables.Add(d.Build());
         }
+#endif
         
         public void SetVisibility(bool visibility)
         {
@@ -45,7 +55,7 @@
 
         public void Dispose()
         {
-            _disposables.ForEach(d => d.Dispose());
+            _disposables?.ForEach(d => d.Dispose());
             _disposables = null;
         }
     }

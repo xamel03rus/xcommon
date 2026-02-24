@@ -4,7 +4,7 @@ using System.Linq;
 using Unity.Collections;
 using UnityEngine;
 using UnityEngine.Animations;
-using XCommon.Abstracts;
+using Xamel.Common.Abstracts;
 
 namespace Xamel.Common.Core
 {

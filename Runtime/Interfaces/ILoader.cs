@@ -1,4 +1,6 @@
-﻿namespace Xamel.Common.Interfaces
+﻿using System.Threading.Tasks;
+
+namespace Xamel.Common.Interfaces
 {
     public interface ILoader
     {

@@ -1,10 +1,10 @@
 ﻿using System;
 using System.Threading;
-using Common.Data;
 using Unity.Collections;
 using UnityEngine;
 using UnityEngine.Animations;
 using UnityEngine.Playables;
+using X.Runtime.Models;
 
 namespace Xamel.Common.Abstracts
 {
