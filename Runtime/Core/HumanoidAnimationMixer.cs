@@ -5,19 +5,17 @@ using Unity.Collections;
 using UnityEngine;
 using UnityEngine.Animations;
 using Xamel.Common.Abstracts;
+using Xamel.Runtime.Models;
 
 namespace Xamel.Common.Core
 {
     public class HumanoidAnimationMixer : AbstractAnimationMixer
     {
-        [Serializable]
-        public class BoneTransformWeight
-        {
-            public HumanBodyBones bone;
-
-            [Range(0.0f, 1.0f)]
-            public float weight;
-        }
+        private List<Transform> _collectedBones = new();
+        private Dictionary<Transform, HumanBodyBones> _humanBoneMapping = new();
+        
+        [SerializeField]
+        private HumanoidTransformWeight[] weightRewrites;
 
         private static AvatarMaskBodyPart GetBodyPartForHumanBone(HumanBodyBones bone)
         {
@@ -95,12 +93,6 @@ namespace Xamel.Common.Core
                     return AvatarMaskBodyPart.Body;
             }
         }
-
-        private List<Transform> _collectedBones = new();
-        private Dictionary<Transform, HumanBodyBones> _humanBoneMapping = new();
-        
-        [SerializeField]
-        private BoneTransformWeight[] weightRewrites;
 
         protected override void LoadAvatar()
         {

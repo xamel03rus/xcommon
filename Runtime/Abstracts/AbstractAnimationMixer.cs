@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Threading;
 using Unity.Collections;
 using UnityEngine;
@@ -11,11 +12,13 @@ namespace Xamel.Common.Abstracts
     [DisallowMultipleComponent]
     public abstract class AbstractAnimationMixer : MonoBehaviour
     {
-        protected Animator Animator;
-
         protected string BoneTag = "Bone";
 
         private AvatarMask _baseAvatar;
+
+        protected List<AnimationPlayableClip> Layers = new();
+        
+        protected List<AnimationPlayableClip> OnceLayers = new();
 
         protected AvatarMask ActiveAvatarMask;
         
@@ -39,12 +42,8 @@ namespace Xamel.Common.Abstracts
 
         protected AnimationScriptPlayable OnceMaskMixer;
 
-        private AnimationClipPlayable _playableClip;
-
-        private AnimationClipPlayable _oncePlayableClip;
+        public Animator Animator;
         
-        private CancellationTokenSource _playOnceCts;
-
         public AnimatorControllerPlayable Controller;
         
         protected virtual void Awake()
@@ -101,14 +100,20 @@ namespace Xamel.Common.Abstracts
                 Graph.Destroy();
             }
 
-            if (_playableClip.IsValid())
+            foreach (var l in Layers)
             {
-                _playableClip.Destroy();
+                if (l.playable.IsValid())
+                {
+                    l.playable.Destroy();
+                }
             }
 
-            if (_oncePlayableClip.IsValid())
+            foreach (var l in OnceLayers)
             {
-                _oncePlayableClip.Destroy();
+                if (l.playable.IsValid())
+                {
+                    l.playable.Destroy();
+                }
             }
 
             if (MaskMixer.IsValid())
@@ -126,40 +131,33 @@ namespace Xamel.Common.Abstracts
             HandleWeights.Dispose();
         }
         
-        public async void Play(AnimationClip clip, AvatarMask mask = null, float speed = 1f)
+        public async void Play(AnimationPlayableClip playableClip)
         {
             if (MaskMixer.GetInputCount() == 2)
             {
-                await Stop();
+                await Cancel(1);
             }
 
-            if (mask == null)
+            if (playableClip.avatarMask == null)
             {
-                mask = _baseAvatar;
+                playableClip.avatarMask = _baseAvatar;
             }
 
-            ActiveAvatarMask = mask;
+            ActiveAvatarMask = playableClip.avatarMask;
             
             ReloadAvatar();
 
-            await Blend(0.15f, blendTime =>
-            {
-                var w = Mathf.Lerp(0f, weight, blendTime);
-                var job = MaskMixer.GetJobData<AnimationMixerJob>();
-
-                job.HandleWeights = HandleWeights;
-                job.Weight = w;
-
-                MaskMixer.SetJobData(job);
-            });
+            await ChangeWeight(MaskMixer, weight, 0.15f, playableClip.cts);
             
-            _playableClip = AnimationClipPlayable.Create(Graph, clip);
-            _playableClip.SetTime(0);
-            _playableClip.SetSpeed(speed);
+            playableClip.playable = AnimationClipPlayable.Create(Graph, playableClip.clip);
+            playableClip.playable.SetTime(0);
+            playableClip.playable.SetSpeed(playableClip.speed);
 
+            Layers.Add(playableClip);
+            
             MaskMixer.SetInputCount(2);
             MaskMixer.DisconnectInput(1);
-            MaskMixer.ConnectInput(1, _playableClip, 0);
+            MaskMixer.ConnectInput(1, playableClip.playable, 0);
             MaskMixer.SetInputWeight(1, 1);
         }
 
@@ -167,7 +165,7 @@ namespace Xamel.Common.Abstracts
         {
             if (OnceMaskMixer.GetInputCount() == 2)
             {
-                await CancelOnceClip();
+                await CancelOnceClip(1);
             }
             
             var mask = animationPlayOnceData.PlayableAnimationClip.avatarMask;
@@ -180,74 +178,46 @@ namespace Xamel.Common.Abstracts
 
             ReloadOnceAvatar();
             
-            var clip = animationPlayOnceData.PlayableAnimationClip.animationClip;
+            var clip = animationPlayOnceData.PlayableAnimationClip.clip;
             var playableClip = AnimationClipPlayable.Create(Graph, clip);
             playableClip.SetDuration(clip.length);
             playableClip.SetTime(0);
             playableClip.SetSpeed(0);
 
-            _oncePlayableClip = playableClip;
+            animationPlayOnceData.PlayableAnimationClip.playable = playableClip;
+
+            OnceLayers.Add(animationPlayOnceData.PlayableAnimationClip);
 
             OnceMaskMixer.SetInputCount(2);
             OnceMaskMixer.ConnectInput(1, playableClip, 0);
             OnceMaskMixer.SetInputWeight(1, 1);
             
-            _playOnceCts = animationPlayOnceData.CancelToken;
-            
-            await Blend(0.15f, bTime =>
-            {
-                if (_playOnceCts.IsCancellationRequested)
-                {
-                    return;
-                }
+            await ChangeWeight(OnceMaskMixer, weight, 0.15f, animationPlayOnceData.PlayableAnimationClip.cts);
 
-                var w = Mathf.Lerp(0f, weight, bTime);
-                var job = OnceMaskMixer.GetJobData<AnimationMixerJob>();
-
-                job.HandleWeights = OnceHandleWeights;
-                job.Weight = w;
-
-                OnceMaskMixer.SetJobData(job);
-            });
-            
-            if (!playableClip.IsValid() || _playOnceCts.IsCancellationRequested)
+            if (!playableClip.IsValid() || animationPlayOnceData.PlayableAnimationClip.cts.IsCancellationRequested)
             {
                 return;
             }
 
             playableClip.SetSpeed(animationPlayOnceData.PlayableAnimationClip.speed);
 
-            await WaitClipEnd(playableClip, animationPlayOnceData.ProcessCallback, _playOnceCts);
+            await WaitClipEnd(playableClip, animationPlayOnceData.ProcessCallback, animationPlayOnceData.PlayableAnimationClip.cts);
 
-            if (_playOnceCts.IsCancellationRequested)
+            if (animationPlayOnceData.PlayableAnimationClip.cts.IsCancellationRequested)
             {
                 return;
             }
             
             animationPlayOnceData.EndCallback?.Invoke();
             
-            await CancelOnceClip();
+            await CancelOnceClip(1);
         }
 
-        public async Awaitable CancelOnceClip()
+        public async Awaitable CancelOnceClip(int layer)
         {
-            await Blend(0.15f, bTime =>
-            {
-                if (_playOnceCts.IsCancellationRequested)
-                {
-                    return;
-                }
+            await ChangeWeight(OnceMaskMixer, 0f, 0.15f, OnceLayers[layer].cts);
 
-                var w = Mathf.Lerp(weight, 0f, bTime);
-                var job = OnceMaskMixer.GetJobData<AnimationMixerJob>();
-
-                job.HandleWeights = OnceHandleWeights;
-                job.Weight = w;
-
-                OnceMaskMixer.SetJobData(job);
-            });
-            
-            _playOnceCts.Cancel();
+            OnceLayers[layer].cts.Cancel();
 
             if (OnceMaskMixer.GetInputCount() == 2)
             {
@@ -255,35 +225,45 @@ namespace Xamel.Common.Abstracts
                 OnceMaskMixer.SetInputCount(1);
             }
             
-            if (_oncePlayableClip.IsValid())
+            if (OnceLayers[layer].playable.IsValid())
             {
-                _oncePlayableClip.Destroy();
+                OnceLayers[layer].playable.Destroy();
             }
         }
         
-        public async Awaitable Stop()
+        public async Awaitable Cancel(int layer)
         {
-            await Blend(0.1f, blendTime =>
-            {
-                var w = Mathf.Lerp(weight, 0f, blendTime);
-                var job = MaskMixer.GetJobData<AnimationMixerJob>();
-
-                job.HandleWeights = HandleWeights;
-                job.Weight = w;
-
-                MaskMixer.SetJobData(job);
-            });
-
+            await ChangeWeight(MaskMixer, 0f, 0.1f, Layers[layer].cts);
+            
             if (MaskMixer.GetInputCount() == 2)
             {
                 MaskMixer.DisconnectInput(1);
                 MaskMixer.SetInputCount(1);
             }
 
-            if (_playableClip.IsValid())
+            if (Layers[layer].playable.IsValid())
             {
-                _playableClip.Destroy();
+                Layers[layer].playable.Destroy();
             }
+        }
+
+        private async Awaitable ChangeWeight(AnimationScriptPlayable mixer, float targetWeight, float duration, CancellationTokenSource token)
+        {
+            await Blend(duration, blendTime =>
+            {
+                if (token.IsCancellationRequested)
+                {
+                    return;
+                }
+                
+                var job = mixer.GetJobData<AnimationMixerJob>();
+                var w = Mathf.Lerp(job.Weight, targetWeight, blendTime);
+
+                job.HandleWeights = HandleWeights;
+                job.Weight = w;
+
+                mixer.SetJobData(job);
+            });
         }
         
         private static async Awaitable Blend(float duration, Action<float> blendCallback)
