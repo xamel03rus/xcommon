@@ -24,15 +24,14 @@ namespace Xamel.Common.Abstracts
         private readonly List<LayerState> _layers = new();
         private readonly List<OnceLayerState> _onceLayers = new();
 
-        protected AvatarMask ActiveAvatarMask;
-        protected AvatarMask ActiveAvatarOnceMask;
-
         [SerializeField] [Range(0.0f, 1.0f)] protected float weight;
 
         protected NativeArray<TransformStreamHandle> Handles;
-        protected NativeArray<bool> HandleMask;
+        /// <summary>Per-bone overlay input index: 0 = base only, 1 = first overlay, 2 = second, etc.</summary>
+        protected NativeArray<int> HandleInputIndex;
         protected NativeArray<float> HandleWeights;
-        protected NativeArray<bool> OnceHandleMask;
+        /// <summary>Per-bone once input index: 0 = from MaskMixer only, 1 = first once clip, etc.</summary>
+        protected NativeArray<int> OnceHandleInputIndex;
         protected NativeArray<float> OnceHandleWeights;
 
         protected PlayableGraph Graph;
@@ -49,37 +48,41 @@ namespace Xamel.Common.Abstracts
         {
             public AnimationClipPlayable playable;
             public CancellationTokenSource cts;
+            public AvatarMask mask;
         }
 
         private sealed class OnceLayerState
         {
             public AnimationClipPlayable playable;
             public AnimationPlayOnceData data;
+            public AvatarMask mask;
         }
 
         protected virtual void Awake()
         {
             Animator = GetComponent<Animator>();
             _baseAvatar = new AvatarMask();
-            ActiveAvatarMask = _baseAvatar;
-            ActiveAvatarOnceMask = _baseAvatar;
 
             LoadAvatar();
+            ReloadAvatar(GetOverlayMasks());
+            ReloadOnceAvatar(GetOnceMasks());
 
             var job = new AnimationMixerJob()
             {
                 Handles = Handles,
-                HandleMask = HandleMask,
+                HandleInputIndex = HandleInputIndex,
                 HandleWeights = HandleWeights,
                 Weight = weight,
+                InputCount = 1,
             };
 
             var job2 = new AnimationMixerJob()
             {
                 Handles = Handles,
-                HandleMask = OnceHandleMask,
+                HandleInputIndex = OnceHandleInputIndex,
                 HandleWeights = OnceHandleWeights,
                 Weight = weight,
+                InputCount = 1,
             };
 
             var graphName = $"{gameObject.name} - Graph #{_graphId}";
@@ -131,30 +134,25 @@ namespace Xamel.Common.Abstracts
                 OnceMaskMixer.Destroy();
 
             if (Handles.IsCreated) Handles.Dispose();
-            if (HandleMask.IsCreated) HandleMask.Dispose();
+            if (HandleInputIndex.IsCreated) HandleInputIndex.Dispose();
             if (HandleWeights.IsCreated) HandleWeights.Dispose();
-            if (OnceHandleMask.IsCreated) OnceHandleMask.Dispose();
+            if (OnceHandleInputIndex.IsCreated) OnceHandleInputIndex.Dispose();
             if (OnceHandleWeights.IsCreated) OnceHandleWeights.Dispose();
         }
 
-        /// <summary>Plays an overlay clip on top of the base controller. Does not mutate the passed clip; blend time is read from playableClip.blendTime.</summary>
+        /// <summary>Plays an overlay clip on top of the base controller. Adds a new layer (supports multiple overlay inputs). Does not mutate the passed clip.</summary>
         /// <param name="playableClip">Clip config (clip, avatarMask, speed, blendTime). Not modified by the mixer.</param>
-        /// <returns>Completes when the overlay is connected; cancellation is possible via the mixer's Cancel(0).</returns>
+        /// <returns>Completes when the overlay is connected; cancel via <see cref="Cancel"/> with the layer index.</returns>
         public async Awaitable Play(AnimationPlayableClip playableClip)
         {
             if (playableClip == null || playableClip.clip == null)
                 return;
 
-            if (MaskMixer.GetInputCount() == 2 && _layers.Count > 0)
-                await Cancel(0);
-
             var mask = playableClip.avatarMask != null ? playableClip.avatarMask : _baseAvatar;
-            ActiveAvatarMask = mask;
-            ReloadAvatar();
-
             var state = new LayerState
             {
                 cts = new CancellationTokenSource(),
+                mask = mask,
                 playable = AnimationClipPlayable.Create(Graph, playableClip.clip)
             };
             state.playable.SetTime(0);
@@ -171,13 +169,12 @@ namespace Xamel.Common.Abstracts
             }
 
             _layers.Add(state);
-            MaskMixer.SetInputCount(2);
-            MaskMixer.DisconnectInput(1);
-            MaskMixer.ConnectInput(1, state.playable, 0);
-            MaskMixer.SetInputWeight(1, 1f);
+            ReconnectOverlayInputs();
+            ReloadAvatar(GetOverlayMasks());
+            UpdateMaskMixerJob();
         }
 
-        /// <summary>Plays a one-shot clip. Uses only <see cref="AnimationPlayOnceData.CancelToken"/> for cancellation; callbacks from the same data are invoked during and at end of playback.</summary>
+        /// <summary>Plays a one-shot clip. Adds a new once layer (supports multiple simultaneous once clips). Uses only <see cref="AnimationPlayOnceData.CancelToken"/> for cancellation.</summary>
         /// <param name="animationPlayOnceData">Clip config, CancelToken, ProcessCallback, EndCallback. PlayableAnimationClip is not mutated.</param>
         /// <returns>Completes when the clip finishes or is cancelled.</returns>
         public async Awaitable PlayOnce(AnimationPlayOnceData animationPlayOnceData)
@@ -185,27 +182,20 @@ namespace Xamel.Common.Abstracts
             if (animationPlayOnceData?.PlayableAnimationClip?.clip == null)
                 return;
 
-            if (OnceMaskMixer.GetInputCount() == 2 && _onceLayers.Count > 0)
-                await CancelOnceClip(0);
-
             var mask = animationPlayOnceData.PlayableAnimationClip.avatarMask != null
                 ? animationPlayOnceData.PlayableAnimationClip.avatarMask
                 : _baseAvatar;
-            ActiveAvatarOnceMask = mask;
-            ReloadOnceAvatar();
-
             var clip = animationPlayOnceData.PlayableAnimationClip.clip;
             var playableClip = AnimationClipPlayable.Create(Graph, clip);
             playableClip.SetDuration(clip.length);
             playableClip.SetTime(0);
             playableClip.SetSpeed(0);
 
-            var state = new OnceLayerState { playable = playableClip, data = animationPlayOnceData };
+            var state = new OnceLayerState { playable = playableClip, data = animationPlayOnceData, mask = mask };
             _onceLayers.Add(state);
-
-            OnceMaskMixer.SetInputCount(2);
-            OnceMaskMixer.ConnectInput(1, playableClip, 0);
-            OnceMaskMixer.SetInputWeight(1, 1f);
+            ReconnectOnceInputs();
+            ReloadOnceAvatar(GetOnceMasks());
+            UpdateOnceMixerJob();
 
             var cts = animationPlayOnceData.CancelToken;
             await ChangeWeight(OnceMaskMixer, weight, 0.15f, cts, useOnceWeights: true);
@@ -221,11 +211,11 @@ namespace Xamel.Common.Abstracts
                 return;
 
             animationPlayOnceData.EndCallback?.Invoke();
-            await CancelOnceClip(0);
+            RemoveOnceLayer(state);
         }
 
-        /// <summary>Cancels the current once overlay at the given layer index (use 0 for single overlay). Blends out then disconnects and removes from the list.</summary>
-        /// <param name="layer">Layer index (0 for the only once overlay). Ignored if out of range.</param>
+        /// <summary>Cancels the once clip at the given layer index. Blends out, disconnects, and removes from the list.</summary>
+        /// <param name="layer">Layer index (0-based). Ignored if out of range.</param>
         public async Awaitable CancelOnceClip(int layer)
         {
             if (layer < 0 || layer >= _onceLayers.Count)
@@ -237,20 +227,17 @@ namespace Xamel.Common.Abstracts
 
             state.data?.CancelToken?.Cancel();
 
-            if (OnceMaskMixer.GetInputCount() == 2)
-            {
-                OnceMaskMixer.DisconnectInput(1);
-                OnceMaskMixer.SetInputCount(1);
-            }
-
             if (state.playable.IsValid())
                 state.playable.Destroy();
 
             _onceLayers.RemoveAt(layer);
+            ReconnectOnceInputs();
+            ReloadOnceAvatar(GetOnceMasks());
+            UpdateOnceMixerJob();
         }
 
-        /// <summary>Cancels the overlay at the given layer index (use 0 for single overlay). Blends out then disconnects and removes from the layer list.</summary>
-        /// <param name="layer">Layer index (0 for the only overlay). Ignored if out of range.</param>
+        /// <summary>Cancels the overlay at the given layer index. Blends out, disconnects, and removes from the layer list.</summary>
+        /// <param name="layer">Layer index (0-based). Ignored if out of range.</param>
         public async Awaitable Cancel(int layer)
         {
             if (layer < 0 || layer >= _layers.Count)
@@ -262,16 +249,13 @@ namespace Xamel.Common.Abstracts
             state.cts?.Cancel();
             state.cts?.Dispose();
 
-            if (MaskMixer.GetInputCount() == 2)
-            {
-                MaskMixer.DisconnectInput(1);
-                MaskMixer.SetInputCount(1);
-            }
-
             if (state.playable.IsValid())
                 state.playable.Destroy();
 
             _layers.RemoveAt(layer);
+            ReconnectOverlayInputs();
+            ReloadAvatar(GetOverlayMasks());
+            UpdateMaskMixerJob();
         }
 
         private async Awaitable ChangeWeight(AnimationScriptPlayable mixer, float targetWeight, float duration,
@@ -286,6 +270,7 @@ namespace Xamel.Common.Abstracts
                 var w = Mathf.Lerp(job.Weight, targetWeight, blendTime);
                 job.Weight = w;
                 job.HandleWeights = useOnceWeights ? OnceHandleWeights : HandleWeights;
+                job.HandleInputIndex = useOnceWeights ? OnceHandleInputIndex : HandleInputIndex;
                 mixer.SetJobData(job);
             }, token);
         }
@@ -315,57 +300,133 @@ namespace Xamel.Common.Abstracts
         }
 
         protected abstract void LoadAvatar();
-        protected abstract void ReloadAvatar();
-        protected abstract void ReloadOnceAvatar();
+        /// <param name="overlayMasks">Masks for each overlay layer (index 0 = input 1, etc.). Empty = all bones use base only.</param>
+        protected abstract void ReloadAvatar(IReadOnlyList<AvatarMask> overlayMasks);
+        /// <param name="onceMasks">Masks for each once layer (index 0 = input 1, etc.). Empty = all bones from MaskMixer only.</param>
+        protected abstract void ReloadOnceAvatar(IReadOnlyList<AvatarMask> onceMasks);
+
+        private List<AvatarMask> GetOverlayMasks()
+        {
+            var list = new List<AvatarMask>(_layers.Count);
+            for (var i = 0; i < _layers.Count; i++)
+                list.Add(_layers[i].mask ?? _baseAvatar);
+            return list;
+        }
+
+        private List<AvatarMask> GetOnceMasks()
+        {
+            var list = new List<AvatarMask>(_onceLayers.Count);
+            for (var i = 0; i < _onceLayers.Count; i++)
+                list.Add(_onceLayers[i].mask ?? _baseAvatar);
+            return list;
+        }
+
+        private void ReconnectOverlayInputs()
+        {
+            var count = 1 + _layers.Count;
+            for (var i = 1; i < MaskMixer.GetInputCount(); i++)
+                MaskMixer.DisconnectInput(i);
+            MaskMixer.SetInputCount(count);
+            for (var i = 0; i < _layers.Count; i++)
+            {
+                MaskMixer.ConnectInput(1 + i, _layers[i].playable, 0);
+                MaskMixer.SetInputWeight(1 + i, 1f);
+            }
+        }
+
+        private void ReconnectOnceInputs()
+        {
+            var count = 1 + _onceLayers.Count;
+            for (var i = 1; i < OnceMaskMixer.GetInputCount(); i++)
+                OnceMaskMixer.DisconnectInput(i);
+            OnceMaskMixer.SetInputCount(count);
+            for (var i = 0; i < _onceLayers.Count; i++)
+            {
+                OnceMaskMixer.ConnectInput(1 + i, _onceLayers[i].playable, 0);
+                OnceMaskMixer.SetInputWeight(1 + i, 1f);
+            }
+        }
+
+        private void UpdateMaskMixerJob()
+        {
+            var job = MaskMixer.GetJobData<AnimationMixerJob>();
+            job.InputCount = MaskMixer.GetInputCount();
+            job.HandleInputIndex = HandleInputIndex;
+            MaskMixer.SetJobData(job);
+        }
+
+        private void UpdateOnceMixerJob()
+        {
+            var job = OnceMaskMixer.GetJobData<AnimationMixerJob>();
+            job.InputCount = OnceMaskMixer.GetInputCount();
+            job.HandleInputIndex = OnceHandleInputIndex;
+            OnceMaskMixer.SetJobData(job);
+        }
+
+        private void RemoveOnceLayer(OnceLayerState state)
+        {
+            var idx = _onceLayers.IndexOf(state);
+            if (idx < 0) return;
+            if (state.playable.IsValid())
+                state.playable.Destroy();
+            _onceLayers.RemoveAt(idx);
+            ReconnectOnceInputs();
+            ReloadOnceAvatar(GetOnceMasks());
+            UpdateOnceMixerJob();
+        }
 
         private struct AnimationMixerJob : IAnimationJob
         {
             public NativeArray<TransformStreamHandle> Handles;
-            public NativeArray<bool> HandleMask;
+            /// <summary>Per-bone: 0 = base only, 1..InputCount-1 = blend with that input.</summary>
+            public NativeArray<int> HandleInputIndex;
             public NativeArray<float> HandleWeights;
             public float Weight;
+            public int InputCount;
 
             public void ProcessRootMotion(AnimationStream stream)
             {
-                var streamA = stream.GetInputStream(0);
-                var streamB = stream.GetInputStream(1);
-
-                if (!streamB.isValid)
+                var velocity = stream.GetInputStream(0).velocity;
+                var angularVelocity = stream.GetInputStream(0).angularVelocity;
+                for (var inp = 1; inp < InputCount; inp++)
                 {
-                    stream.velocity = streamA.velocity;
-                    stream.angularVelocity = streamA.angularVelocity;
-                    return;
+                    var s = stream.GetInputStream(inp);
+                    if (!s.isValid) continue;
+                    velocity = Vector3.Lerp(velocity, s.velocity, Weight);
+                    angularVelocity = Vector3.Lerp(angularVelocity, s.angularVelocity, Weight);
                 }
-
-                stream.velocity = Vector3.Lerp(streamA.velocity, streamB.velocity, Weight);
-                stream.angularVelocity = Vector3.Lerp(streamA.angularVelocity, streamB.angularVelocity, Weight);
+                stream.velocity = velocity;
+                stream.angularVelocity = angularVelocity;
             }
 
             public void ProcessAnimation(AnimationStream stream)
             {
                 var streamA = stream.GetInputStream(0);
-                var streamB = stream.GetInputStream(1);
 
                 for (var i = 0; i < Handles.Length; i++)
                 {
                     var handle = Handles[i];
+                    var inp = HandleInputIndex[i];
                     var boneWeight = HandleWeights[i];
 
-                    if (streamB.isValid && HandleMask[i])
+                    if (inp > 0 && inp < InputCount)
                     {
-                        var posA = handle.GetPosition(streamA);
-                        var posB = handle.GetPosition(streamB);
-                        handle.SetPosition(stream, Vector3.Lerp(posA, posB, Weight * boneWeight));
+                        var streamB = stream.GetInputStream(inp);
+                        if (streamB.isValid)
+                        {
+                            var posA = handle.GetPosition(streamA);
+                            var posB = handle.GetPosition(streamB);
+                            handle.SetPosition(stream, Vector3.Lerp(posA, posB, Weight * boneWeight));
 
-                        var rotA = handle.GetRotation(streamA);
-                        var rotB = handle.GetRotation(streamB);
-                        handle.SetRotation(stream, Quaternion.Slerp(rotA, rotB, Weight * boneWeight));
+                            var rotA = handle.GetRotation(streamA);
+                            var rotB = handle.GetRotation(streamB);
+                            handle.SetRotation(stream, Quaternion.Slerp(rotA, rotB, Weight * boneWeight));
+                            continue;
+                        }
                     }
-                    else
-                    {
-                        handle.SetPosition(stream, handle.GetPosition(streamA));
-                        handle.SetRotation(stream, handle.GetRotation(streamA));
-                    }
+
+                    handle.SetPosition(stream, handle.GetPosition(streamA));
+                    handle.SetRotation(stream, handle.GetRotation(streamA));
                 }
             }
         }

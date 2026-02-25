@@ -14,10 +14,9 @@ namespace Xamel.Common.Core
     public class HumanoidAnimationMixer : AbstractAnimationMixer
     {
         private List<Transform> _collectedBones = new();
+        private Dictionary<Transform, int> _boneToIndex = new();
         private Dictionary<Transform, HumanBodyBones> _humanBoneMapping = new();
         private Dictionary<HumanBodyBones, float> _weightByBone;
-        private HashSet<Transform> _maskedTransformsForMain = new();
-        private HashSet<Transform> _maskedTransformsForOnce = new();
 
         [SerializeField] private HumanoidTransformWeight[] weightRewrites;
 
@@ -116,54 +115,24 @@ namespace Xamel.Common.Core
             }
 
             CollectBones();
+            for (var i = 0; i < _collectedBones.Count; i++)
+                _boneToIndex[_collectedBones[i]] = i;
+
             var numTransforms = _collectedBones.Count;
 
             Handles = new NativeArray<TransformStreamHandle>(numTransforms, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
-            HandleMask = new NativeArray<bool>(numTransforms, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+            HandleInputIndex = new NativeArray<int>(numTransforms, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
             HandleWeights = new NativeArray<float>(numTransforms, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
-            OnceHandleMask = new NativeArray<bool>(numTransforms, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+            OnceHandleInputIndex = new NativeArray<int>(numTransforms, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
             OnceHandleWeights = new NativeArray<float>(numTransforms, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
 
             for (var i = 0; i < numTransforms; i++)
             {
                 Handles[i] = Animator.BindStreamTransform(_collectedBones[i]);
-                HandleMask[i] = false;
-                OnceHandleMask[i] = false;
-
-                if (!_humanBoneMapping.TryGetValue(_collectedBones[i], out var humanBone))
-                    continue;
-
-                var bodyPart = GetBodyPartForHumanBone(humanBone);
-                var weightVal = GetWeightForBone(humanBone);
-
-                if (ActiveAvatarMask.GetHumanoidBodyPartActive(bodyPart))
-                {
-                    HandleMask[i] = true;
-                    HandleWeights[i] = weightVal;
-                }
-
-                if (ActiveAvatarOnceMask.GetHumanoidBodyPartActive(bodyPart))
-                {
-                    OnceHandleMask[i] = true;
-                    OnceHandleWeights[i] = weightVal;
-                }
-            }
-
-            BuildMaskedSet(HandleMask, _maskedTransformsForMain);
-            BuildMaskedSet(OnceHandleMask, _maskedTransformsForOnce);
-
-            for (var i = 0; i < numTransforms; i++)
-            {
-                if (!HandleMask[i] && IsChildOfAny(_collectedBones[i], _maskedTransformsForMain))
-                {
-                    HandleMask[i] = true;
-                    HandleWeights[i] = 1f;
-                }
-                if (!OnceHandleMask[i] && IsChildOfAny(_collectedBones[i], _maskedTransformsForOnce))
-                {
-                    OnceHandleMask[i] = true;
-                    OnceHandleWeights[i] = 1f;
-                }
+                HandleInputIndex[i] = 0;
+                OnceHandleInputIndex[i] = 0;
+                HandleWeights[i] = 1f;
+                OnceHandleWeights[i] = 1f;
             }
         }
 
@@ -172,66 +141,80 @@ namespace Xamel.Common.Core
             return _weightByBone != null && _weightByBone.TryGetValue(bone, out var w) ? w : 1f;
         }
 
-        private void BuildMaskedSet(NativeArray<bool> mask, HashSet<Transform> set)
+        /// <summary>Set HandleInputIndex for bones in mask; then propagate to children (child gets same input as first masked ancestor).</summary>
+        protected override void ReloadAvatar(IReadOnlyList<AvatarMask> overlayMasks)
         {
-            set.Clear();
-            for (var i = 0; i < mask.Length; i++)
+            var n = _collectedBones.Count;
+            for (var i = 0; i < n; i++)
+                HandleInputIndex[i] = 0;
+
+            if (overlayMasks == null) return;
+            for (var l = 0; l < overlayMasks.Count; l++)
             {
-                if (mask[i])
-                    set.Add(_collectedBones[i]);
+                var mask = overlayMasks[l];
+                if (mask == null) continue;
+                for (var i = 0; i < n; i++)
+                {
+                    if (!_humanBoneMapping.TryGetValue(_collectedBones[i], out var humanBone))
+                        continue;
+                    var bodyPart = GetBodyPartForHumanBone(humanBone);
+                    if (!mask.GetHumanoidBodyPartActive(bodyPart))
+                        continue;
+                    HandleInputIndex[i] = l + 1;
+                    HandleWeights[i] = GetWeightForBone(humanBone);
+                }
+            }
+            PropagateInputToChildren(HandleInputIndex, HandleWeights);
+        }
+
+        protected override void ReloadOnceAvatar(IReadOnlyList<AvatarMask> onceMasks)
+        {
+            var n = _collectedBones.Count;
+            for (var i = 0; i < n; i++)
+                OnceHandleInputIndex[i] = 0;
+
+            if (onceMasks == null) return;
+            for (var l = 0; l < onceMasks.Count; l++)
+            {
+                var mask = onceMasks[l];
+                if (mask == null) continue;
+                for (var i = 0; i < n; i++)
+                {
+                    if (!_humanBoneMapping.TryGetValue(_collectedBones[i], out var humanBone))
+                        continue;
+                    var bodyPart = GetBodyPartForHumanBone(humanBone);
+                    if (!mask.GetHumanoidBodyPartActive(bodyPart))
+                        continue;
+                    OnceHandleInputIndex[i] = l + 1;
+                    OnceHandleWeights[i] = GetWeightForBone(humanBone);
+                }
+            }
+            PropagateInputToChildren(OnceHandleInputIndex, OnceHandleWeights);
+        }
+
+        private void PropagateInputToChildren(NativeArray<int> inputIndex, NativeArray<float> weights)
+        {
+            var n = _collectedBones.Count;
+            for (var i = 0; i < n; i++)
+            {
+                if (inputIndex[i] != 0) continue;
+                var ancestorInput = GetFirstAncestorInput(_collectedBones[i], inputIndex);
+                if (ancestorInput != 0)
+                {
+                    inputIndex[i] = ancestorInput;
+                    weights[i] = 1f;
+                }
             }
         }
 
-        private static bool IsChildOfAny(Transform t, HashSet<Transform> maskedSet)
+        private int GetFirstAncestorInput(Transform t, NativeArray<int> inputIndex)
         {
-            for (var p = t; p != null; p = p.parent)
+            for (var p = t.parent; p != null; p = p.parent)
             {
-                if (maskedSet.Contains(p))
-                    return true;
+                if (_boneToIndex.TryGetValue(p, out var idx) && inputIndex[idx] != 0)
+                    return inputIndex[idx];
             }
-            return false;
-        }
-
-        protected override void ReloadAvatar()
-        {
-            var numTransforms = _collectedBones.Count;
-            for (var i = 0; i < numTransforms; i++)
-            {
-                HandleMask[i] = false;
-                if (!_humanBoneMapping.TryGetValue(_collectedBones[i], out _))
-                    continue;
-                var bodyPart = GetBodyPartForHumanBone(_humanBoneMapping[_collectedBones[i]]);
-                if (!ActiveAvatarMask.GetHumanoidBodyPartActive(bodyPart))
-                    continue;
-                HandleMask[i] = true;
-            }
-            BuildMaskedSet(HandleMask, _maskedTransformsForMain);
-            for (var i = 0; i < numTransforms; i++)
-            {
-                if (!HandleMask[i] && IsChildOfAny(_collectedBones[i], _maskedTransformsForMain))
-                    HandleMask[i] = true;
-            }
-        }
-
-        protected override void ReloadOnceAvatar()
-        {
-            var numTransforms = _collectedBones.Count;
-            for (var i = 0; i < numTransforms; i++)
-            {
-                OnceHandleMask[i] = false;
-                if (!_humanBoneMapping.TryGetValue(_collectedBones[i], out _))
-                    continue;
-                var bodyPart = GetBodyPartForHumanBone(_humanBoneMapping[_collectedBones[i]]);
-                if (!ActiveAvatarOnceMask.GetHumanoidBodyPartActive(bodyPart))
-                    continue;
-                OnceHandleMask[i] = true;
-            }
-            BuildMaskedSet(OnceHandleMask, _maskedTransformsForOnce);
-            for (var i = 0; i < numTransforms; i++)
-            {
-                if (!OnceHandleMask[i] && IsChildOfAny(_collectedBones[i], _maskedTransformsForOnce))
-                    OnceHandleMask[i] = true;
-            }
+            return 0;
         }
 
         private void CollectBones()

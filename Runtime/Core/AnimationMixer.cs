@@ -46,59 +46,66 @@ namespace Xamel.Common.Core
 
             var n = _transforms.Count;
             Handles = new NativeArray<TransformStreamHandle>(n, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
-            HandleMask = new NativeArray<bool>(n, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+            HandleInputIndex = new NativeArray<int>(n, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
             HandleWeights = new NativeArray<float>(n, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
-            OnceHandleMask = new NativeArray<bool>(n, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+            OnceHandleInputIndex = new NativeArray<int>(n, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
             OnceHandleWeights = new NativeArray<float>(n, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
 
             for (var i = 0; i < n; i++)
             {
-                var t = _transforms[i];
-                Handles[i] = Animator.BindStreamTransform(t);
-                HandleMask[i] = false;
-                OnceHandleMask[i] = false;
-
-                if (!_transformToIndex.TryGetValue(t, out var idx))
-                    continue;
-                if (!ActiveAvatarMask.GetTransformActive(idx))
-                    continue;
-
-                HandleMask[i] = true;
-                HandleWeights[i] = GetWeightForTransform(t);
-
-                if (!ActiveAvatarOnceMask.GetTransformActive(idx))
-                    continue;
-                OnceHandleMask[i] = true;
-                OnceHandleWeights[i] = GetWeightForTransform(t);
+                Handles[i] = Animator.BindStreamTransform(_transforms[i]);
+                HandleInputIndex[i] = 0;
+                OnceHandleInputIndex[i] = 0;
+                HandleWeights[i] = 1f;
+                OnceHandleWeights[i] = 1f;
             }
         }
 
-        protected override void ReloadAvatar()
+        protected override void ReloadAvatar(IReadOnlyList<AvatarMask> overlayMasks)
         {
             var n = _transforms.Count;
             for (var i = 0; i < n; i++)
+                HandleInputIndex[i] = 0;
+
+            if (overlayMasks == null) return;
+            for (var l = 0; l < overlayMasks.Count; l++)
             {
-                HandleMask[i] = false;
-                if (!_transformToIndex.TryGetValue(_transforms[i], out var idx))
-                    continue;
-                if (!ActiveAvatarMask.GetTransformActive(idx))
-                    continue;
-                HandleMask[i] = true;
+                var mask = overlayMasks[l];
+                if (mask == null) continue;
+                for (var i = 0; i < n; i++)
+                {
+                    if (!_transformToIndex.TryGetValue(_transforms[i], out var idx))
+                        continue;
+                    if (mask.GetTransformActive(idx))
+                    {
+                        HandleInputIndex[i] = l + 1;
+                        HandleWeights[i] = GetWeightForTransform(_transforms[i]);
+                    }
+                }
             }
         }
 
-        protected override void ReloadOnceAvatar()
+        protected override void ReloadOnceAvatar(IReadOnlyList<AvatarMask> onceMasks)
         {
             var n = _transforms.Count;
             for (var i = 0; i < n; i++)
+                OnceHandleInputIndex[i] = 0;
+
+            if (onceMasks == null) return;
+            for (var l = 0; l < onceMasks.Count; l++)
             {
-                OnceHandleMask[i] = false;
-                if (!_transformToIndex.TryGetValue(_transforms[i], out var idx))
-                    continue;
-                if (!ActiveAvatarOnceMask.GetTransformActive(idx))
-                    continue;
-                OnceHandleMask[i] = true;
-                OnceHandleWeights[i] = GetWeightForTransform(_transforms[i]);
+                var mask = onceMasks[l];
+                if (mask == null) continue;
+                for (var i = 0; i < n; i++)
+                {
+                    if (!_transformToIndex.TryGetValue(_transforms[i], out var idx))
+                        continue;
+                    if (mask.GetTransformActive(idx))
+                    {
+                        OnceHandleInputIndex[i] = l + 1;
+                        OnceHandleWeights[i] = GetWeightForTransform(_transforms[i]);
+                    }
+                }
             }
         }
 
