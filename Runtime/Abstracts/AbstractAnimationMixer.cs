@@ -72,7 +72,6 @@ namespace Xamel.Common.Abstracts
                 Handles = Handles,
                 HandleInputIndex = HandleInputIndex,
                 HandleWeights = HandleWeights,
-                Weight = weight,
                 InputCount = 1,
             };
 
@@ -81,7 +80,6 @@ namespace Xamel.Common.Abstracts
                 Handles = Handles,
                 HandleInputIndex = OnceHandleInputIndex,
                 HandleWeights = OnceHandleWeights,
-                Weight = weight,
                 InputCount = 1,
             };
 
@@ -157,9 +155,11 @@ namespace Xamel.Common.Abstracts
             };
             state.playable.SetTime(0);
             state.playable.SetSpeed(playableClip.speed);
+            
+            ReconnectOverlayInputs();
 
             float blendDuration = playableClip.blendTime > 0f ? playableClip.blendTime : 0.15f;
-            await ChangeWeight(MaskMixer, weight, blendDuration, state.cts, useOnceWeights: false);
+            await ChangeWeight(MaskMixer, 1 + _layers.Count, weight, blendDuration, state.cts, useOnceWeights: false);
 
             if (state.cts.IsCancellationRequested)
             {
@@ -198,7 +198,7 @@ namespace Xamel.Common.Abstracts
             UpdateOnceMixerJob();
 
             var cts = animationPlayOnceData.CancelToken;
-            await ChangeWeight(OnceMaskMixer, weight, 0.15f, cts, useOnceWeights: true);
+            await ChangeWeight(OnceMaskMixer, 1 + _layers.Count, weight, 0.15f, cts, useOnceWeights: true);
 
             if (!playableClip.IsValid() || (cts != null && cts.IsCancellationRequested))
                 return;
@@ -223,7 +223,8 @@ namespace Xamel.Common.Abstracts
 
             var state = _onceLayers[layer];
             var cts = state.data?.CancelToken;
-            await ChangeWeight(OnceMaskMixer, 0f, 0.15f, cts, useOnceWeights: true);
+            
+            await ChangeWeight(OnceMaskMixer, 1 + _layers.Count,0f, 0.15f, cts, useOnceWeights: true);
 
             state.data?.CancelToken?.Cancel();
 
@@ -244,7 +245,7 @@ namespace Xamel.Common.Abstracts
                 return;
 
             var state = _layers[layer];
-            await ChangeWeight(MaskMixer, 0f, 0.1f, state.cts, useOnceWeights: false);
+            await ChangeWeight(MaskMixer, 1 + _layers.Count, 0f, 0.1f, state.cts, useOnceWeights: false);
 
             state.cts?.Cancel();
             state.cts?.Dispose();
@@ -258,7 +259,7 @@ namespace Xamel.Common.Abstracts
             UpdateMaskMixerJob();
         }
 
-        private async Awaitable ChangeWeight(AnimationScriptPlayable mixer, float targetWeight, float duration,
+        private async Awaitable ChangeWeight(AnimationScriptPlayable mixer, int layer, float targetWeight, float duration,
             CancellationTokenSource token, bool useOnceWeights)
         {
             await Blend(duration, blendTime =>
@@ -267,8 +268,9 @@ namespace Xamel.Common.Abstracts
                     return;
 
                 var job = mixer.GetJobData<AnimationMixerJob>();
-                var w = Mathf.Lerp(job.Weight, targetWeight, blendTime);
-                job.Weight = w;
+                var w = Mathf.Lerp(MaskMixer.GetInputWeight(layer), targetWeight, blendTime);
+                MaskMixer.SetInputWeight(layer, w);
+ 
                 job.HandleWeights = useOnceWeights ? OnceHandleWeights : HandleWeights;
                 job.HandleInputIndex = useOnceWeights ? OnceHandleInputIndex : HandleInputIndex;
                 mixer.SetJobData(job);
@@ -381,7 +383,6 @@ namespace Xamel.Common.Abstracts
             /// <summary>Per-bone: 0 = base only, 1..InputCount-1 = blend with that input.</summary>
             public NativeArray<int> HandleInputIndex;
             public NativeArray<float> HandleWeights;
-            public float Weight;
             public int InputCount;
 
             public void ProcessRootMotion(AnimationStream stream)
@@ -392,8 +393,8 @@ namespace Xamel.Common.Abstracts
                 {
                     var s = stream.GetInputStream(inp);
                     if (!s.isValid) continue;
-                    velocity = Vector3.Lerp(velocity, s.velocity, Weight);
-                    angularVelocity = Vector3.Lerp(angularVelocity, s.angularVelocity, Weight);
+                    velocity += s.velocity;
+                    angularVelocity += s.angularVelocity;
                 }
                 stream.velocity = velocity;
                 stream.angularVelocity = angularVelocity;
@@ -416,11 +417,11 @@ namespace Xamel.Common.Abstracts
                         {
                             var posA = handle.GetPosition(streamA);
                             var posB = handle.GetPosition(streamB);
-                            handle.SetPosition(stream, Vector3.Lerp(posA, posB, Weight * boneWeight));
+                            handle.SetPosition(stream, Vector3.Lerp(posA, posB, boneWeight));
 
                             var rotA = handle.GetRotation(streamA);
                             var rotB = handle.GetRotation(streamB);
-                            handle.SetRotation(stream, Quaternion.Slerp(rotA, rotB, Weight * boneWeight));
+                            handle.SetRotation(stream, Quaternion.Slerp(rotA, rotB, boneWeight));
                             continue;
                         }
                     }
