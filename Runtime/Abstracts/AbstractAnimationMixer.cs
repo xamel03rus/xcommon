@@ -252,7 +252,7 @@ namespace Xamel.Common.Abstracts
             var cts = data?.CancelToken;
             
             float blendDuration = data.PlayableClip.outBlendTime > 0f ? data.PlayableClip.outBlendTime : 0.15f;
-            await ChangeWeight(OnceMaskMixer, _onceLayers.Count,0f, blendDuration, cts, useOnceWeights: true, rewrite: false);
+            await ChangeWeight(OnceMaskMixer, layer + 1, 0f, blendDuration, cts, useOnceWeights: true, rewrite: false);
             
             state.data?.CancelToken?.Cancel();
 
@@ -277,7 +277,7 @@ namespace Xamel.Common.Abstracts
             var state = _layers[layer];
             
             float blendDuration = state.PlayableClip.outBlendTime > 0f ? state.PlayableClip.outBlendTime : 0.15f;
-            await ChangeWeight(MaskMixer, _layers.Count, 0f, blendDuration, state.cts, useOnceWeights: false, rewrite: false);
+            await ChangeWeight(MaskMixer, layer + 1, 0f, blendDuration, state.cts, useOnceWeights: false, rewrite: false);
 
             state.cts?.Cancel();
             state.cts?.Dispose();
