@@ -10,13 +10,14 @@ namespace Xamel.Runtime.Models
     /// Runtime state (playable, cts) is owned by the mixer and not serialized.
     /// </summary>
     [Serializable]
-    public class AnimationPlayableClip
+    public class PlayableClip
     {
         public AnimationClip clip;
         [NonSerialized] public AnimationClipPlayable playable;
         public AvatarMask avatarMask;
         public float speed = 1f;
         public float blendTime = 0.15f;
+        public float outBlendTime = 0.15f;
         [NonSerialized] public CancellationTokenSource cts;
     }
 }

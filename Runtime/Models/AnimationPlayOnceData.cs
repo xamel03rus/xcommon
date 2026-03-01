@@ -9,7 +9,7 @@ namespace Xamel.Runtime.Models
     /// </summary>
     public class AnimationPlayOnceData
     {
-        public AnimationPlayableClip PlayableAnimationClip;
+        public PlayableClip PlayableClip;
         /// <summary>Single source for cancellation. Cancel this to stop the once clip.</summary>
         public CancellationTokenSource CancelToken;
         public bool WithBlending = false;
