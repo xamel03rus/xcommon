@@ -259,7 +259,9 @@ namespace Xamel.Common.Abstracts
             if (state.playable.IsValid())
                 state.playable.Destroy();
 
-            _onceLayers.RemoveAt(layer);
+            var idx = _onceLayers.IndexOf(state);
+            if (idx >= 0)
+                _onceLayers.RemoveAt(idx);
             ReconnectOnceInputs();
             ReloadOnceAvatar(GetOnceMasks());
             UpdateOnceMixerJob();
@@ -283,7 +285,9 @@ namespace Xamel.Common.Abstracts
             if (state.playable.IsValid())
                 state.playable.Destroy();
 
-            _layers.RemoveAt(layer);
+            var idx = _layers.IndexOf(state);
+            if (idx >= 0)
+                _layers.RemoveAt(idx);
             ReconnectOverlayInputs();
             ReloadAvatar(GetOverlayMasks());
             UpdateMaskMixerJob();
