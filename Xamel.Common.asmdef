@@ -1,3 +1,9 @@
 {
-	"name": "xamel"
+	"name": "xamel",
+	"rootNamespace": "Xamel.Common",
+	"references": [
+		"Unity.Burst"
+	],
+	"allowUnsafeCode": false,
+	"autoReferenced": true
 }

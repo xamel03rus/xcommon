@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
+using Unity.Burst;
 using Unity.Collections;
 using UnityEngine;
 using UnityEngine.Animations;
@@ -24,6 +25,9 @@ namespace Xamel.Common.Abstracts
 
         private readonly List<LayerState> _layers = new();
         private readonly List<OnceLayerState> _onceLayers = new();
+
+        private readonly List<AvatarMask> _overlayMasksBuffer = new();
+        private readonly List<AvatarMask> _onceMasksBuffer = new();
         
         [SerializeField] [Range(0.0f, 1.0f)] protected float weight;
 
@@ -92,12 +96,11 @@ namespace Xamel.Common.Abstracts
             _graphId++;
             Graph.SetTimeUpdateMode(DirectorUpdateMode.GameTime);
 
-            Controller = AnimatorControllerPlayable.Create(Graph, Animator.runtimeAnimatorController);
-            Animator.runtimeAnimatorController = null;
+            var basePlayable = CreateBasePlayable();
 
             MaskMixer = AnimationScriptPlayable.Create(Graph, job);
             MaskMixer.SetProcessInputs(false);
-            MaskMixer.AddInput(Controller, 0, 1.0f);
+            MaskMixer.AddInput(basePlayable, 0, 1.0f);
 
             OnceMaskMixer = AnimationScriptPlayable.Create(Graph, job2);
             OnceMaskMixer.SetProcessInputs(false);
@@ -109,7 +112,27 @@ namespace Xamel.Common.Abstracts
             Graph.Play();
         }
 
-        private void OnDisable()
+        /// <summary>
+        /// Creates the playable for the base slot (input 0 of the overlay mixer).
+        /// Default: wraps the Animator's runtime controller. Override to plug in a
+        /// different base source (e.g. motion matching) - the controller is then not touched.
+        /// </summary>
+        protected virtual Playable CreateBasePlayable()
+        {
+            Controller = AnimatorControllerPlayable.Create(Graph, Animator.runtimeAnimatorController);
+            Animator.runtimeAnimatorController = null;
+            return Controller;
+        }
+
+        /// <summary>Reconnects the base slot to a new playable (used for base-source swapping).</summary>
+        protected void ReplaceBasePlayable(Playable newBase)
+        {
+            MaskMixer.DisconnectInput(0);
+            MaskMixer.ConnectInput(0, newBase, 0);
+            MaskMixer.SetInputWeight(0, 1f);
+        }
+
+        protected virtual void OnDisable()
         {
             if (Graph.IsValid())
                 Graph.Destroy();
@@ -379,18 +402,18 @@ namespace Xamel.Common.Abstracts
 
         private List<AvatarMask> GetOverlayMasks()
         {
-            var list = new List<AvatarMask>(_layers.Count);
+            _overlayMasksBuffer.Clear();
             for (var i = 0; i < _layers.Count; i++)
-                list.Add(_layers[i].mask ?? _baseAvatar);
-            return list;
+                _overlayMasksBuffer.Add(_layers[i].mask ?? _baseAvatar);
+            return _overlayMasksBuffer;
         }
 
         private List<AvatarMask> GetOnceMasks()
         {
-            var list = new List<AvatarMask>(_onceLayers.Count);
+            _onceMasksBuffer.Clear();
             for (var i = 0; i < _onceLayers.Count; i++)
-                list.Add(_onceLayers[i].mask ?? _baseAvatar);
-            return list;
+                _onceMasksBuffer.Add(_onceLayers[i].mask ?? _baseAvatar);
+            return _onceMasksBuffer;
         }
 
         private void ReconnectOverlayInputs()
@@ -447,12 +470,13 @@ namespace Xamel.Common.Abstracts
             UpdateOnceMixerJob();
         }
 
+        [BurstCompile]
         private struct AnimationMixerJob : IAnimationJob
         {
-            public NativeArray<TransformStreamHandle> Handles;
+            [ReadOnly] public NativeArray<TransformStreamHandle> Handles;
             /// <summary>Per-bone: 0 = base only, 1..InputCount-1 = blend with that input.</summary>
-            public NativeArray<int> HandleInputIndex;
-            public NativeArray<float> HandleWeights;
+            [ReadOnly] public NativeArray<int> HandleInputIndex;
+            [ReadOnly] public NativeArray<float> HandleWeights;
             public int InputCount;
             public float Weight;
 
