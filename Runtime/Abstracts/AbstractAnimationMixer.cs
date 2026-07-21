@@ -251,16 +251,38 @@ namespace Xamel.Common.Abstracts
             await ChangeWeight(OnceMaskMixer, _onceLayers.Count, 1f, blendDuration, cts, useOnceWeights: true, false);
 
             if (!playableClip.IsValid() || (cts != null && cts.IsCancellationRequested))
+            {
+                await FinishCancelled(state, animationPlayOnceData);
                 return;
+            }
 
             await WaitClipEnd(playableClip, animationPlayOnceData.ProcessCallback, cts);
 
             if (cts != null && cts.IsCancellationRequested)
+            {
+                await FinishCancelled(state, animationPlayOnceData);
                 return;
-            
+            }
+
             await CancelOnceClip(_onceLayers.IndexOf(state));
-            
+
             animationPlayOnceData.EndCallback?.Invoke();
+        }
+
+        /// <summary>
+        /// Cancellation path of PlayOnce. The layer MUST still be disconnected and removed -
+        /// a cancelled chain that just returns leaves its input wired into the graph forever
+        /// (the frozen-in-air-pose class of bugs, plus a leaked layer per cancelled attack).
+        /// EndCallback fires too, so state machines driven by it (attack chains, jump
+        /// stages) never hang on a cancelled clip; owners that cancel to REPLACE a clip
+        /// must guard their callback against the stale invocation (e.g. a generation id).
+        /// </summary>
+        private async Awaitable FinishCancelled(OnceLayerState state, AnimationPlayOnceData data)
+        {
+            // CancelOnceClip's own blend-out short-circuits on the already-cancelled token -
+            // the removal is effectively immediate, which is what a cancel wants.
+            await CancelOnceClip(_onceLayers.IndexOf(state));
+            data.EndCallback?.Invoke();
         }
 
         /// <summary>Cancels the once clip at the given layer index. Blends out, disconnects, and removes from the list.</summary>
